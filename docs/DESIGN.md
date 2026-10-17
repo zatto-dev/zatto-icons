@@ -1,7 +1,7 @@
 # Zatto Icons - design
 
-Decision (CEO, 2026-10-17): as simple and fast as possible, free of charge. The earlier specification (R2, circuit breaker,
-signatures, Merkle trees, GitHub App) is kept in `docs/archive/` for reference only and is **not** implemented.
+Decision (2026-10-17): as simple and fast as possible, free of charge — static files on Cloudflare Pages. An earlier, heavier design
+(R2, circuit breaker, signatures, Merkle trees, GitHub App) was considered and dropped.
 
 ## Shape
 
