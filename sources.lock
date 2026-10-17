@@ -1,0 +1,10 @@
+{
+  "homarr": {
+    "repo": "homarr-labs/dashboard-icons",
+    "commit": "6d31345986eba2067a63eb41c1a5a87d4e8e850a"
+  },
+  "selfhst": {
+    "repo": "selfhst/icons",
+    "commit": "1d65d45a42e6323b54b8096967b1ea4b65321f97"
+  }
+}
