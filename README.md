@@ -55,3 +55,8 @@ See [`docs/DESIGN.md`](docs/DESIGN.md) for the design and the sanitization polic
 ## License
 
 Code: [MIT](LICENSE). Icons: the license of their source (see above and `/attribution.html`); this repository does not contain icon files.
+
+## One-time setup
+
+`scripts/cf-setup.sh` creates the Pages project, attaches `icons.zatto.dev`, points DNS at it and stores the two GitHub secrets
+(`CLOUDFLARE_API_TOKEN` with Pages:Edit, `CLOUDFLARE_ACCOUNT_ID`). It reads credentials from Vault via `zsecret`.
