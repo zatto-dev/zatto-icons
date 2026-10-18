@@ -37,7 +37,7 @@ CSS `@import`, `@font-face`, `expression()`, `javascript:`, backslash escapes.
 Pipeline: allow-list pass on the DOM (`@xmldom/xmldom`) -> SVGO -> **independent re-validation of the final bytes** (same rules, re-parsed).
 `test/dist.test.mjs` runs that validator over every file in `dist/`.
 
-PNG: signature, chunk CRCs, dimensions <= 8192 px per side and <= 40 MP, size <= 6 MiB; only rendering chunks are kept (text/EXIF/ICC/APNG chunks dropped).
+PNG: signature, chunk CRCs; input guards against decompression bombs (<= 6 MiB, <= 8192 px per side, <= 40 MP). Only rendering chunks are kept (text/EXIF/ICC/APNG chunks dropped). Output is kept light: PNGs over 512 px on the longest side or over 256 KiB are decoded, box-downscaled to <= 512 px (aspect ratio kept, alpha-aware) and re-encoded as 8-bit RGB(A); if still > 256 KiB, colours are quantized progressively, otherwise the file is rejected (logged in .cache/rejected.log).
 
 ## Legal
 
