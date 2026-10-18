@@ -31,3 +31,9 @@ test("oversized dimensions are rejected", () => {
   const b = Buffer.concat([SIG, ihdr(100000, 1), chunk("IDAT", zlib.deflateSync(Buffer.alloc(5))), chunk("IEND")]);
   assert.equal(sanitizePng(b).ok, false);
 });
+test("large but valid png (wide banner, >4096 px, >1 MiB) is accepted; absurd dimensions are not", () => {
+  assert.equal(sanitizePng(Buffer.concat([SIG, ihdr(5088, 512), chunk("IDAT", zlib.deflateSync(Buffer.alloc(5))), chunk("IEND")])).ok, true);
+  assert.equal(sanitizePng(Buffer.concat([SIG, ihdr(8000, 8000), chunk("IDAT", zlib.deflateSync(Buffer.alloc(5))), chunk("IEND")])).ok, false);
+  const big = Buffer.concat([SIG, ihdr(1, 1), chunk("IDAT", Buffer.alloc(3 * 1024 * 1024, 7)), chunk("IEND")]);
+  assert.equal(sanitizePng(big).ok, true);
+});

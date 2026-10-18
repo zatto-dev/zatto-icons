@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sanitizeSvg } from "./lib/sanitize-svg.mjs";
+import { groupVariants } from "./lib/group-variants.mjs";
 import { sanitizePng } from "./lib/sanitize-png.mjs";
 import { renderAttribution, renderLanding, renderHeaders } from "./lib/pages.mjs";
 
@@ -47,20 +48,6 @@ function checkPinned(src) {
 
 const dirList = (dir, ext) => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(ext)).map((f) => f.slice(0, -ext.length)) : []);
 
-/** Group raw file stems into base icons + light/dark variants. Returns Map<rawStem, {variants:{light?,dark?}}>. */
-function groupVariants(stems) {
-  const all = new Set(stems);
-  const bases = new Map();
-  const variantOf = new Map();
-  for (const s of stems) {
-    const m = /^(.+)-(light|dark)$/.exec(s);
-    if (m && all.has(m[1])) variantOf.set(s, [m[1], m[2]]);
-  }
-  for (const s of stems) if (!variantOf.has(s)) bases.set(s, { variants: {} });
-  for (const [s, [base, kind]] of variantOf) bases.get(base).variants[kind] = s;
-  return bases;
-}
-
 /** @returns Map<slug, entry>; entry.files = {base, light?, dark?} each {svg?, png?} absolute paths */
 function loadHomarr(src) {
   const meta = JSON.parse(fs.readFileSync(path.join(src.dir, "metadata.json"), "utf8"));
@@ -69,14 +56,14 @@ function loadHomarr(src) {
   const stems = [...new Set([...Object.keys(meta), ...svgs, ...pngs])].filter((s) => svgs.has(s) || pngs.has(s));
   const files = (stem) => ({ ...(svgs.has(stem) && { svg: path.join(svgDir, `${stem}.svg`) }), ...(pngs.has(stem) && { png: path.join(pngDir, `${stem}.png`) }) });
   const out = new Map();
-  for (const [stem, g] of groupVariants(stems)) {
+  for (const [stem, g] of groupVariants(stems, new Set(Object.keys(meta)))) {
     const slug = slugify(stem);
     if (!slug || out.has(slug)) continue;
     const m = meta[stem] || {};
     out.set(slug, {
       slug, source: src.id, name: prettify(slug),
       aliases: m.aliases || [], categories: (m.categories || []).map(kebab),
-      files: { base: files(stem), ...Object.fromEntries(Object.entries(g.variants).map(([k, vs]) => [k, files(vs)])) },
+      files: { base: g.fromVariant ? files(g.variants.light || g.variants.dark) : files(stem), ...Object.fromEntries(Object.entries(g.variants).map(([k, vs]) => [k, files(vs)])) },
     });
   }
   return out;

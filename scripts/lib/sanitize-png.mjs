@@ -1,7 +1,8 @@
 // PNG sanitizer: verifies structure and CRCs, keeps only rendering chunks (drops text/EXIF/ICC/APNG metadata).
 import zlib from "node:zlib";
 
-export const PNG_LIMITS = { maxBytes: 1024 * 1024, maxDim: 4096 };
+// Valid upstream icons reach 5 MB / 5000 px; limits only bound resource use, they are not a safety boundary (chunks are re-written).
+export const PNG_LIMITS = { maxBytes: 6 * 1024 * 1024, maxDim: 8192, maxPixels: 40_000_000 };
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const KEEP = new Set(["IHDR", "PLTE", "tRNS", "gAMA", "cHRM", "sRGB", "IDAT", "IEND"]);
 
@@ -23,7 +24,7 @@ export function sanitizePng(buf) {
       if (type !== "IHDR" || len !== 13) return { ok: false, reason: "no-ihdr" };
       width = body.readUInt32BE(0);
       height = body.readUInt32BE(4);
-      if (!width || !height || width > PNG_LIMITS.maxDim || height > PNG_LIMITS.maxDim) return { ok: false, reason: "bad-dimensions" };
+      if (!width || !height || width > PNG_LIMITS.maxDim || height > PNG_LIMITS.maxDim || width * height > PNG_LIMITS.maxPixels) return { ok: false, reason: "bad-dimensions" };
       first = false;
     }
     if (type === "IDAT") sawIdat = true;

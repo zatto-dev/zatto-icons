@@ -37,7 +37,7 @@ CSS `@import`, `@font-face`, `expression()`, `javascript:`, backslash escapes.
 Pipeline: allow-list pass on the DOM (`@xmldom/xmldom`) -> SVGO -> **independent re-validation of the final bytes** (same rules, re-parsed).
 `test/dist.test.mjs` runs that validator over every file in `dist/`.
 
-PNG: signature, chunk CRCs, dimensions <= 4096 px, size <= 1 MiB; only rendering chunks are kept (text/EXIF/ICC/APNG chunks dropped).
+PNG: signature, chunk CRCs, dimensions <= 8192 px per side and <= 40 MP, size <= 6 MiB; only rendering chunks are kept (text/EXIF/ICC/APNG chunks dropped).
 
 ## Legal
 
