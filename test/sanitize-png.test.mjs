@@ -81,3 +81,54 @@ test("palette image with tRNS is expanded and scaled", () => {
   assert.deepEqual([...d.px.subarray(0, 4)], [10, 20, 30, 255]);
   assert.equal(d.px[(511) * 4 + 3], 0);
 });
+import { expectedRawSize } from "../scripts/lib/sanitize-png.mjs";
+
+// --- review hardening: IDAT verification, IHDR validation, chunk order, per-file failure isolation ---
+const ihdrX = (w, h, depth, ctype, comp = 0, filt = 0, il = 0) => { const b = Buffer.alloc(13); b.writeUInt32BE(w, 0); b.writeUInt32BE(h, 4); b[8] = depth; b[9] = ctype; b[10] = comp; b[11] = filt; b[12] = il; return chunk("IHDR", b); };
+const idatOk = chunk("IDAT", zlib.deflateSync(Buffer.alloc(5)));
+const mk = (...cs) => Buffer.concat([SIG, ...cs, chunk("IEND")]);
+
+test("fast path: corrupt / wrong-length IDAT is rejected", () => {
+  assert.equal(sanitizePng(mk(ihdr(1, 1), chunk("IDAT", Buffer.from("garbage-not-zlib")))).ok, false);
+  assert.equal(sanitizePng(mk(ihdr(1, 1), chunk("IDAT", zlib.deflateSync(Buffer.alloc(4))))).reason, "bad-idat-length");
+  assert.equal(sanitizePng(mk(ihdr(1, 1), chunk("IDAT", zlib.deflateSync(Buffer.alloc(6))))).ok, false);
+  const trunc = zlib.deflateSync(Buffer.alloc(5)).subarray(0, 4);
+  assert.equal(sanitizePng(mk(ihdr(1, 1), chunk("IDAT", trunc))).ok, false);
+  assert.equal(sanitizePng(mk(ihdr(1, 1), idatOk)).ok, true);
+});
+test("fast path: Adam7 expected length is checked", () => {
+  // 3x3 RGBA8 Adam7: passes 1(1x1) 2(none) 3(none: x0=0,y0=4) 4(2x1: x0=2? ) -> compute via decoder helper
+  const need = expectedRawSize({ width: 3, height: 3, depth: 8, ctype: 6, interlace: 1 });
+  assert.equal(sanitizePng(mk(ihdrX(3, 3, 8, 6, 0, 0, 1), chunk("IDAT", zlib.deflateSync(Buffer.alloc(need))))).ok, true);
+  assert.equal(sanitizePng(mk(ihdrX(3, 3, 8, 6, 0, 0, 1), chunk("IDAT", zlib.deflateSync(Buffer.alloc(3 * (3 * 4 + 1)))))).ok, false);
+});
+test("IHDR validation: depth/colour type, compression, filter, interlace", () => {
+  for (const [d, c] of [[8, 1], [16, 3], [4, 2], [2, 6], [1, 4], [3, 0], [0, 0]]) assert.equal(sanitizePng(mk(ihdrX(1, 1, d, c), idatOk)).reason, "bad-ihdr", `${d}/${c}`);
+  assert.equal(sanitizePng(mk(ihdrX(1, 1, 8, 6, 1), idatOk)).reason, "bad-ihdr");
+  assert.equal(sanitizePng(mk(ihdrX(1, 1, 8, 6, 0, 1), idatOk)).reason, "bad-ihdr");
+  assert.equal(sanitizePng(mk(ihdrX(1, 1, 8, 6, 0, 0, 2), idatOk)).reason, "bad-ihdr");
+});
+test("chunk order and uniqueness", () => {
+  const plte = chunk("PLTE", Buffer.from([1, 2, 3])), gama = chunk("gAMA", Buffer.alloc(4));
+  const pidat = chunk("IDAT", zlib.deflateSync(Buffer.alloc(2)));
+  const pal = ihdrX(1, 1, 8, 3);
+  assert.equal(sanitizePng(mk(pal, plte, pidat)).ok, true);
+  assert.equal(sanitizePng(mk(pal, plte, plte, pidat)).reason, "duplicate-chunk");
+  assert.equal(sanitizePng(mk(pal, pidat, plte)).reason, "chunk-order");
+  assert.equal(sanitizePng(mk(pal, pidat)).reason, "no-plte");
+  assert.equal(sanitizePng(mk(pal, chunk("tRNS", Buffer.from([0])), plte, pidat)).ok, false); // tRNS before PLTE
+  assert.equal(sanitizePng(mk(pal, plte, chunk("tRNS", Buffer.from([0])), pidat)).ok, true);
+  assert.equal(sanitizePng(mk(ihdr(1, 1), gama, gama, idatOk)).reason, "duplicate-chunk");
+  assert.equal(sanitizePng(mk(ihdr(1, 1), idatOk, gama)).reason, "chunk-order");
+  assert.equal(sanitizePng(mk(ihdr(1, 1), ihdr(1, 1), idatOk)).reason, "chunk-order");
+  const half = zlib.deflateSync(Buffer.alloc(5)), h1 = half.subarray(0, 3), h2 = half.subarray(3);
+  assert.equal(sanitizePng(mk(ihdr(1, 1), chunk("IDAT", h1), chunk("IDAT", h2))).ok, true);
+  assert.equal(sanitizePng(mk(ihdr(1, 1), chunk("IDAT", h1), chunk("tEXt", Buffer.from("a\0b")), chunk("IDAT", h2))).reason, "chunk-order");
+  assert.equal(sanitizePng(Buffer.concat([SIG, ihdr(1, 1), idatOk, chunk("IEND", Buffer.alloc(1))])).reason, "bad-iend");
+});
+test("noisy large image (encode may exceed limit) never throws; returns a result object", () => {
+  const noisy = rgbaPng(600, 600, () => [Math.random() * 256 | 0, Math.random() * 256 | 0, Math.random() * 256 | 0, 255]);
+  let r;
+  assert.doesNotThrow(() => { r = sanitizePng(noisy); });
+  assert.equal(typeof r.ok, "boolean");
+});

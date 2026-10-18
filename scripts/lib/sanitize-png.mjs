@@ -7,6 +7,7 @@ export const PNG_LIMITS = { maxBytes: 6 * 1024 * 1024, maxDim: 8192, maxPixels: 
 export const OUT_LIMITS = { maxEdge: 512, maxBytes: 256 * 1024 }; // output
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const KEEP = new Set(["IHDR", "PLTE", "tRNS", "gAMA", "cHRM", "sRGB", "IDAT", "IEND"]);
+const VALID_DEPTHS = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
 const CHANNELS = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 const ADAM7 = [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]]; // x0,y0,dx,dy
 
@@ -15,7 +16,8 @@ export function sanitizePng(buf) {
   if (buf.length > PNG_LIMITS.maxBytes) return { ok: false, reason: "input-too-large" };
   if (buf.length < 33 || !buf.subarray(0, 8).equals(SIGNATURE)) return { ok: false, reason: "not-png" };
   const out = [SIGNATURE], idat = [], info = { plte: null, trns: null };
-  let pos = 8, width = 0, height = 0, depth = 0, ctype = 0, interlace = 0, sawIdat = false, sawEnd = false, first = true;
+  const seen = new Set();
+  let pos = 8, width = 0, height = 0, depth = 0, ctype = 0, interlace = 0, sawIdat = false, idatDone = false, sawEnd = false, first = true;
   while (pos + 12 <= buf.length && !sawEnd) {
     const len = buf.readUInt32BE(pos);
     const type = buf.toString("latin1", pos + 4, pos + 8);
@@ -30,29 +32,74 @@ export function sanitizePng(buf) {
       height = body.readUInt32BE(4);
       if (!width || !height || width > PNG_LIMITS.maxDim || height > PNG_LIMITS.maxDim || width * height > PNG_LIMITS.maxPixels) return { ok: false, reason: "bad-dimensions" };
       depth = body[8]; ctype = body[9]; interlace = body[12];
+      if (!VALID_DEPTHS[ctype]?.includes(depth) || body[10] !== 0 || body[11] !== 0 || (interlace !== 0 && interlace !== 1)) return { ok: false, reason: "bad-ihdr" };
       first = false;
+    } else if (type === "IHDR") return { ok: false, reason: "chunk-order" };
+    // Ordering/uniqueness (PNG spec 5.6): KEEP chunks at most once (IDAT: one contiguous run), ancillary/PLTE before IDAT.
+    if (KEEP.has(type)) {
+      if (type === "IDAT") {
+        if (idatDone) return { ok: false, reason: "chunk-order" };
+        sawIdat = true;
+      } else {
+        if (sawIdat && !idatDone) idatDone = true;
+        if (seen.has(type)) return { ok: false, reason: "duplicate-chunk" };
+        seen.add(type);
+        if (type !== "IEND" && type !== "IHDR" && sawIdat) return { ok: false, reason: "chunk-order" };
+        if (type === "PLTE" && seen.has("tRNS")) return { ok: false, reason: "chunk-order" };
+      }
+    } else if (sawIdat) idatDone = true;
+    if (type === "IDAT") idat.push(body);
+    if (type === "PLTE") {
+      if (ctype === 0 || ctype === 4 || len === 0 || len % 3 || len / 3 > 256 || (ctype === 3 && len / 3 > 1 << depth)) return { ok: false, reason: "bad-plte" };
+      info.plte = body;
     }
-    if (type === "IDAT") { sawIdat = true; idat.push(body); }
-    if (type === "PLTE") info.plte = body;
-    if (type === "tRNS") info.trns = body;
-    if (type === "IEND") sawEnd = true;
+    if (type === "tRNS") {
+      const okLen = ctype === 0 ? len === 2 : ctype === 2 ? len === 6 : ctype === 3 ? info.plte && len <= info.plte.length / 3 : false;
+      if (!okLen) return { ok: false, reason: "bad-trns" };
+      info.trns = body;
+    }
+    if (type === "IEND") { sawEnd = true; if (len !== 0) return { ok: false, reason: "bad-iend" }; }
     if (KEEP.has(type)) out.push(buf.subarray(pos, end));
     pos = end;
   }
   if (!sawIdat || !sawEnd) return { ok: false, reason: "incomplete" };
+  if (ctype === 3 && !info.plte) return { ok: false, reason: "no-plte" };
+
+  // Always verify the zlib stream inflates to exactly the expected size, so corrupt IDAT is rejected even on the fast path.
+  const hdr = { width, height, depth, ctype, interlace };
+  const need = expectedRawSize(hdr);
+  const idatAll = Buffer.concat(idat);
+  try {
+    const raw = zlib.inflateSync(idatAll, { maxOutputLength: need + 1024 });
+    if (raw.length !== need) return { ok: false, reason: "bad-idat-length" };
+  } catch (e) { return { ok: false, reason: `bad-idat:${e.code ?? e.message}` }; }
+
   const kept = Buffer.concat(out);
   if (Math.max(width, height) <= OUT_LIMITS.maxEdge && kept.length <= OUT_LIMITS.maxBytes) return { ok: true, png: kept, width, height };
 
   let rgba;
-  try { rgba = decodeToRgba({ width, height, depth, ctype, interlace }, Buffer.concat(idat), info); } catch (e) { return { ok: false, reason: `decode-failed:${e.message}` }; }
+  try { rgba = decodeToRgba(hdr, idatAll, info); } catch (e) { return { ok: false, reason: `decode-failed:${e.message}` }; }
   const s = Math.min(1, OUT_LIMITS.maxEdge / Math.max(width, height));
   const tw = Math.max(1, Math.round(width * s)), th = Math.max(1, Math.round(height * s));
-  const scaled = s < 1 ? downscale(rgba, width, height, tw, th) : rgba;
-  const png = encodeUnderLimit(scaled, tw, th);
+  let png;
+  try {
+    const scaled = s < 1 ? downscale(rgba, width, height, tw, th) : rgba;
+    png = encodeUnderLimit(scaled, tw, th);
+  } catch (e) { return { ok: false, reason: `resize-failed:${e.message}` }; }
   if (!png) return { ok: false, reason: "too-large-after-resize" };
   return { ok: true, png, width: tw, height: th };
 }
 
+function passList({ width, height, interlace }) {
+  return interlace ? ADAM7.map(([x0, y0, dx, dy]) => ({ x0, y0, dx, dy, pw: Math.ceil((width - x0) / dx), ph: Math.ceil((height - y0) / dy) })) : [{ x0: 0, y0: 0, dx: 1, dy: 1, pw: width, ph: height }];
+}
+/** Exact size of the inflated IDAT stream (filter bytes included, Adam7 aware). Exported for tests. */
+export function expectedRawSize(h) {
+  const ch = CHANNELS[h.ctype];
+  let need = 0;
+  for (const p of passList(h)) if (p.pw > 0 && p.ph > 0) need += p.ph * (1 + Math.ceil((p.pw * ch * h.depth) / 8));
+  return need;
+}
 
 /** Decode any non-animated PNG (all colour types/depths, Adam7) to straight-alpha RGBA8. Exported for tests. */
 export function decodeToRgba(h, idatData, { plte, trns }) {
@@ -60,9 +107,8 @@ export function decodeToRgba(h, idatData, { plte, trns }) {
   if (!(ctype in CHANNELS) || ![1, 2, 4, 8, 16].includes(depth)) throw new Error("unsupported-format");
   if (ctype === 3 && !plte) throw new Error("no-plte");
   const ch = CHANNELS[ctype], bpp = Math.max(1, (ch * depth) >> 3);
-  const passes = interlace ? ADAM7.map(([x0, y0, dx, dy]) => ({ x0, y0, dx, dy, pw: Math.ceil((width - x0) / dx), ph: Math.ceil((height - y0) / dy) })) : [{ x0: 0, y0: 0, dx: 1, dy: 1, pw: width, ph: height }];
-  let need = 0;
-  for (const p of passes) if (p.pw > 0 && p.ph > 0) need += p.ph * (1 + Math.ceil((p.pw * ch * depth) / 8));
+  const passes = passList(h);
+  const need = expectedRawSize(h);
   const raw = zlib.inflateSync(idatData, { maxOutputLength: need + 1024 });
   if (raw.length < need) throw new Error("short-data");
 
